@@ -29,7 +29,7 @@ cd /mnt/home/steepale/bermuda/fastq2bam
 # Files transferred to ./data/
 
 # File naming convention
-# ./data/[NGI-NAME]/02-FASTQ/[Date]_[Unknown-ID1]_[Unknown-ID2]_[Flowcell]/[NGI-NAME]_[BCL-CONVERSION-ID]_[LANE]_[READ]_[VOLUME].fastq.gz
+# ./data/[NGI-NAME]/02-FASTQ/[Date]_[instrument_id]_[run_number]_[Flowcell]/[NGI-NAME]_[BCL-CONVERSION-ID]_[LANE]_[READ]_[VOLUME].fastq.gz
 # Example: ./data/P4806_126/02-FASTQ/170213_ST-E00198_0201_BHGNYFALXX/P4806_126_S12_L002_R1_001.fastq.gz
 
 # NGI-NAME: Internal NGI sample indentifier
@@ -197,9 +197,19 @@ rm ./data/dbsnp/snp/organisms/chicken_9031/VCF/all_sorted.vcf.idx
 cut -f1 ./data/int_config.txt | grep -v "^#" | sort | uniq > \
 ./data/all_samples_dnaseq_bermuda_ngi.txt
 
+### Merge all fastq files based on sample and read group (AKA barcodes)
+for sample in `cat ./data/all_samples_dnaseq_bermuda_ngi.txt`
+do
+for read in 'R1' 'R2'
+do
+cmd=$(find ./data/$sample -name $sample*$read"_001.fastq.gz" | tr '\n' '\t'|  awk '{print "cat " $1 " " $2 " " $3}')
+final_cmd=`echo $cmd" > ./data/fastq_merged/"$sample"_"$read"_merged.fastq.gz"`
+echo $final_cmd | sh
+done
+done
 
 # Sumbit all the sequenced samples from summer 2014
-for sample in `cat ./data/all_samples_dnaseq_bermuda_ngi.txt`
+for sample in `cat ./data/all_samples_dnaseq_bermuda_ngi.txt | head -n1`
 do
 sh ./scripts/fastq2bam_wrapper.sh \
 $sample
@@ -209,54 +219,65 @@ done
 #####################################
 #!/usr/bin/bash
 
-cd /mnt/home/steepale/bermuda/fastq2bam
+cd /mnt/scratch/steepale/birdman/bermuda/fastq2bam
 
 sample=$1
 
-module load Python/3.5.3
+# Load appropriate modules
+module load Python/3.3.2
+module load FastQC/0.11.3
+module load Trimmomatic/0.33
 
 # Submit job to cluster
-qsub -b y -l vf=48G,core=1 -N "fastq2bam_"$sample "python ./scripts/fastq2bam.py $sample"
+qsub -v Var=$sample -N "fastq2bam_"$sample ./scripts/fastq2bam.py
 
 #####################################
 
-python3 ./scripts/fastq2bam.py P4806_126
+# Dev runs
+module load FastQC/0.11.3
+for sample in `cat ./data/all_samples_dnaseq_bermuda_ngi.txt | sed -n 16,21p`
+do
+python ./scripts/fastq2bam.py $sample
+done
 
 # ./scripts/fastq2bam.py
 ################################################
+#!/opt/software/Python/3.3.2--GCC-4.4.5/bin/python
+#PBS -l nodes=1:ppn=1,walltime=01:00:00,mem=10gb
+#PBS -j oe
+#PBS -v arg1=Var
 import sys
 import os
 import re
-
-# Load modules
-os.system('module load Trimmomatic/0.33')
-os.system('module load FastQC/0.11.3')
+from shutil import copyfile
 
 # Change to proper directory
-os.chdir('/mnt/home/steepale/bermuda/fastq2bam')
+os.chdir('/mnt/scratch/steepale/birdman/bermuda/fastq2bam')
 
 # input sample
 in_sample = sys.argv[1]
 
 # reference files
-config_file = "./data/config.txt"
-trim_adaptor_file = '/home/users/a.steep/Apps/Trimmomatic-0.36/adapters/TruSeq2-PE.fa'
-galgal5_ref = '/home/proj/MDW_genomics/galgal5/galgal5.fa'
-galgal5_ref_index = '/home/proj/MDW_genomics/galgal5/galgal5.fa.fai'
-galgal5_ref_dict = galgal5_ref.replace('.fa', '.dict') 
-dbsnp = '/home/users/a.steep/databases/dbsnp/snp/organisms/chicken_9031/VCF/all_sorted.vcf'
+config_file = './data/config.txt'
+#trim_adaptor_file = '/home/users/a.steep/Apps/Trimmomatic-0.36/adapters/TruSeq2-PE.fa'
+#galgal5_ref = '/home/proj/MDW_genomics/galgal5/galgal5.fa'
+#galgal5_ref_index = '/home/proj/MDW_genomics/galgal5/galgal5.fa.fai'
+#galgal5_ref_dict = galgal5_ref.replace('.fa', '.dict') 
+#dbsnp = '/home/users/a.steep/databases/dbsnp/snp/organisms/chicken_9031/VCF/all_sorted.vcf'
 
 # Program files
-sickle = '/home/users/a.steep/Apps/sickle/sickle'
-bwa = '/home/users/a.steep/Apps/bwa/bwa'
-samtools = '/home/users/a.steep/Apps/samtools/samtools'
-picard = '/home/users/a.steep/Apps/picard/build/libs/picard-2.9.2-4-gb4a02aa-SNAPSHOT-all.jar'
-gatk = '/home/users/a.steep/Apps/gatk/GenomeAnalysisTK.jar'
+#sickle = '/home/users/a.steep/Apps/sickle/sickle'
+#bwa = '/home/users/a.steep/Apps/bwa/bwa'
+#samtools = '/home/users/a.steep/Apps/samtools/samtools'
+#picard = '/home/users/a.steep/Apps/picard/build/libs/picard-2.9.2-4-gb4a02aa-SNAPSHOT-all.jar'
+#gatk = '/home/users/a.steep/Apps/gatk/GenomeAnalysisTK.jar'
 
 # Iterate through the config file and grab appropriate sample identifiers and place in dictionary data structure
 sample2ids = {}
 sample2lanes = {}
-read_set = set(['R1', 'R2'])
+sample2run = {}
+sample2bcl = {}
+
 # Iterate through config file and fill dictionaries
 for line in open(config_file):
 	if line[0] != '#':
@@ -272,98 +293,136 @@ for line in open(config_file):
 		barcode = col[9]
 		lane = col[6]
 		read = col[7]
+		# Different dictionaries and id relationships
 		if sample_id not in sample2ids.keys():
 			sample2ids[sample_id] = [barcode]
+		if sample_id not in sample2run.keys():
+			sample2run[sample_id] = set()
+			sample2run[sample_id].add(date+';'+instrument_id+';'+run_number+';'+flowcell)
+		elif sample_id in sample2run.keys():
+			sample2run[sample_id].add(date+';'+instrument_id+';'+run_number+';'+flowcell)
 		if sample_id not in sample2lanes.keys():
 			sample2lanes[sample_id] = set()
 			sample2lanes[sample_id].add(lane)
 		elif sample_id in sample2lanes.keys():
 			sample2lanes[sample_id].add(lane)
+		if sample_id not in sample2bcl.keys():
+			sample2bcl[sample_id] = set()
+			sample2bcl[sample_id].add(bcl_conversion)
+		elif sample_id in sample2bcl.keys():
+			sample2bcl[sample_id].add(bcl_conversion)
 
-# Convert the set of lanes to a list
+# Convert the sets to lists
 sample2lanes[in_sample] = list(sample2lanes[in_sample])
+sample2run[in_sample] = list(sample2run[in_sample])
+sample2bcl[in_sample] = list(sample2bcl[in_sample])
 # Create empty set of bams files for each lane to be filled in for loop
 bams_per_lane_set = set()
 
-### Run a fastqc analysis before preprocessing to assess read quality and adaptor contamination
-for lane in sample2lanes[in_sample]:
-	barcode = sample2ids[in_sample][0]
-	suffix = sample2ids[in_sample][1]
-	sample_type = sample2ids[in_sample][3]
-	r1_file = './data/fastq_all_samples/'+in_sample+'_'+barcode+'_'+lane+'_'+'R1'+'_'+suffix
-	r2_file = './data/fastq_all_samples/'+in_sample+'_'+barcode+'_'+lane+'_'+'R2'+'_'+suffix
-	out_dir = './analysis/fastqc_before_trim/'
-	# Check if output directory exists, if not create it
-	if not os.path.exists(out_dir):
-		os.makedirs(out_dir)
-	# Run FastQC command
-	fastqc_cmd = 'fastqc -o'+' '+out_dir+' '+r1_file+' '+r2_file
-	print('### Run a fastqc analysis before preprocessing to assess read quality and adaptor contamination')
-	os.system(fastqc_cmd)
+# Run through the files quickly and generate a dictionary of files per sample and read direction
+for run in sample2run[in_sample]:
+	for lane in sample2lanes[in_sample]:
+		for bcl_conversion in sample2bcl[in_sample]:
+			date = run.split(';')[0]
+			instrument_id = run.split(';')[1]
+			run_number = run.split(';')[2]
+			flowcell = run.split(';')[3]
+			barcode = sample2ids[in_sample]
+			r1_file_src = './data/'+in_sample+'/02-FASTQ/'+date+'_'+instrument_id+'_'+run_number+'_'+flowcell+'/'+in_sample+'_'+bcl_conversion+'_'+lane+'_R1_001.fastq.gz'
+			if os.path.exists(r1_file_src)
 
-	### Trim off adaptor sequences with trimmomatic and low quality reads
-	trimm_r1_paired_file = './data/trimmomatic/'+in_sample+'_'+barcode+'_'+lane+'_'+'R1'+'_'+'paired_trimmomatic.fastq.gz'
-	trimm_r2_paired_file = './data/trimmomatic/'+in_sample+'_'+barcode+'_'+lane+'_'+'R2'+'_'+'paired_trimmomatic.fastq.gz'
-	trimm_r1_unpaired_file = './data/trimmomatic/'+in_sample+'_'+barcode+'_'+lane+'_'+'R1'+'_'+'unpaired_trimmomatic.fastq.gz'
-	trimm_r2_unpaired_file = './data/trimmomatic/'+in_sample+'_'+barcode+'_'+lane+'_'+'R2'+'_'+'unpaired_trimmomatic.fastq.gz'
-	out_dir = './data/trimmomatic/'
-	# Check if output directory exists, if not create it
-	if not os.path.exists(out_dir):
-		os.makedirs(out_dir)
-	# Run command
-	trimmomatic_cmd = 'java -jar'+' '+trimmomatic+' '+'PE -threads 4'+' '+ \
-	r1_file+' '+r2_file+' '+ \
-	trimm_r1_paired_file+' '+trimm_r1_unpaired_file+' '+ \
-	trimm_r2_paired_file+' '+trimm_r2_unpaired_file+' '+ \
-	'ILLUMINACLIP:'+trim_adaptor_file+':2:30:10 HEADCROP:9'
-	print('### Trim off adaptor sequences with trimmomatic and low quality reads')
-	os.system(trimmomatic_cmd)
 
-	### Perform a FastQC analysis after adapter trimming
-	out_dir = './analysis/fastqc_post_trimmomatic/'
-	# Check if output directory exists, if not create it
-	if not os.path.exists(out_dir):
-		os.makedirs(out_dir)
-	# Run command
-	fastqc_cmd = 'fastqc -o'+' '+out_dir+' '+\
-	trimm_r1_paired_file+' '+trimm_r2_paired_file+' '+\
-	trimm_r1_unpaired_file+' '+trimm_r2_unpaired_file
-	print('### Perform a FastQC analysis after adapter trimming')
-	os.system(fastqc_cmd)
+### Run a fastqc analysis on individual sequencing runs before preprocessing to assess read quality and adaptor contamination
+for run in sample2run[in_sample]:
+	for lane in sample2lanes[in_sample]:
+		for bcl_conversion in sample2bcl[in_sample]:
+			date = run.split(';')[0]
+			instrument_id = run.split(';')[1]
+			run_number = run.split(';')[2]
+			flowcell = run.split(';')[3]
+			barcode = sample2ids[in_sample]
+			# copy files to new folder and rename if they exist
+			fastq_dir = './dev/fastq_all_samples/'
+			r1_file_src = './data/'+in_sample+'/02-FASTQ/'+date+'_'+instrument_id+'_'+run_number+'_'+flowcell+'/'+in_sample+'_'+bcl_conversion+'_'+lane+'_R1_001.fastq.gz'
+			r1_file_dst = fastq_dir+in_sample+'_'+bcl_conversion+'_'+date+'_'+instrument_id+'_'+run_number+'_'+flowcell+'_'+lane+'_R1_001.fastq.gz'
+			r2_file_src = './data/'+in_sample+'/02-FASTQ/'+date+'_'+instrument_id+'_'+run_number+'_'+flowcell+'/'+in_sample+'_'+bcl_conversion+'_'+lane+'_R2_001.fastq.gz'
+			r2_file_dst = fastq_dir+in_sample+'_'+bcl_conversion+'_'+date+'_'+instrument_id+'_'+run_number+'_'+flowcell+'_'+lane+'_R2_001.fastq.gz'
+			if not os.path.exists(fastq_dir):
+				os.makedirs(fastq_dir)
+			if os.path.exists(r1_file_src) and os.path.exists(r2_file_src):
+				copyfile(r1_file_src, r1_file_dst)
+				copyfile(r2_file_src, r2_file_dst)
+				out_dir = './analysis/fastqc_before_trim/'
+				# Check if output directory exists, if not create it
+				if not os.path.exists(out_dir):
+					os.makedirs(out_dir)
+				# Run FastQC command
+				fastqc_cmd = 'fastqc -o'+' '+out_dir+' '+r1_file_dst+' '+r2_file_dst
+				print('### Run a fastqc analysis before preprocessing to assess read quality and adaptor contamination')
+				os.system(fastqc_cmd)
 
-	### Trim off remaining low quality reads with sickle
-	sickle_r1_paired_file = './data/sickle/'+in_sample+'_'+barcode+'_'+lane+'_'+'R1'+'_'+'paired_sickle.fastq.gz'
-	sickle_r2_paired_file = './data/sickle/'+in_sample+'_'+barcode+'_'+lane+'_'+'R2'+'_'+'paired_sickle.fastq.gz'
-	sickle_singles_pe_file = './data/sickle/'+in_sample+'_'+barcode+'_'+lane+'_'+'singles_pe_sickle.fastq.gz'
-	sickle_singles_se_file = './data/sickle/'+in_sample+'_'+barcode+'_'+lane+'_'+'singles_se_sickle.fastq.gz'
-	out_dir = './data/sickle/'
-	# Check if output directory exists, if not create it
-	if not os.path.exists(out_dir):
-		os.makedirs(out_dir)
-	# Run command
-	sickle_pe_cmd = 'sickle pe -f '+trimm_r1_paired_file+' -r '+trimm_r2_paired_file+\
-	' -t sanger -o '+sickle_r1_paired_file+' -p '+sickle_r2_paired_file+\
-	' -s '+sickle_singles_pe_file+' -q 20 -l 50 -g'
-	sickle_se_cmd = 'sickle se -f '+trimm_r1_unpaired_file+\
-	' -t sanger -o '+sickle_singles_se_file+' -q 30 -l 50 -g'
-	print('### Trim off remaining low quality reads with sickle')
-	os.system(sickle_pe_cmd)
-	os.system(sickle_se_cmd)
+### Trim off adaptor sequences with trimmomatic and low quality reads
+r1_file = "./data/fastq_merged/"$sample"_R1_merged.fastq.gz"
+r2_file = "./data/fastq_merged/"$sample"_R2_merged.fastq.gz"
+trimm_r1_paired_file = './data/trimmomatic/'+in_sample+'_merged_R1_'+'paired_trimmomatic.fastq.gz'
+trimm_r2_paired_file = './data/trimmomatic/'+in_sample+'_merged_R2_'+'paired_trimmomatic.fastq.gz'
+trimm_r1_unpaired_file = './data/trimmomatic/'+in_sample+'_merged_R1_'+'unpaired_trimmomatic.fastq.gz'
+trimm_r2_unpaired_file = './data/trimmomatic/'+in_sample+'_merged_R2_'+'unpaired_trimmomatic.fastq.gz'
+out_dir = './data/trimmomatic/'
+# Check if output directory exists, if not create it
+if not os.path.exists(out_dir):
+	os.makedirs(out_dir)
+# Run command
+trimmomatic_cmd = 'java -jar'+' '+trimmomatic+' '+'PE -threads 4'+' '+ \
+r1_file+' '+r2_file+' '+ \
+trimm_r1_paired_file+' '+trimm_r1_unpaired_file+' '+ \
+trimm_r2_paired_file+' '+trimm_r2_unpaired_file+' '+ \
+'ILLUMINACLIP:'+trim_adaptor_file+':2:30:10 HEADCROP:9'
+print('### Trim off adaptor sequences with trimmomatic and low quality reads')
+os.system(trimmomatic_cmd)
 
-	### Perform FastQC post read quality trim via sickle
-	out_dir = './analysis/fastqc_post_sickle/'
-	# Check if output directory exists, if not create it
-	if not os.path.exists(out_dir):
-		os.makedirs(out_dir)
-	# Run command
-	fastqc_cmd = 'fastqc -o'+' '+out_dir+' '+\
-	sickle_r1_paired_file+' '+sickle_r2_paired_file+' '+\
-	sickle_singles_pe_file+' '+sickle_singles_se_file
-	print('### Perform FastQC post read quality trim via sickle')
-	os.system(fastqc_cmd)
+### Perform a FastQC analysis after adapter trimming
+out_dir = './analysis/fastqc_post_trimmomatic/'
+# Check if output directory exists, if not create it
+if not os.path.exists(out_dir):
+	os.makedirs(out_dir)
+# Run command
+fastqc_cmd = 'fastqc -o'+' '+out_dir+' '+\
+trimm_r1_paired_file+' '+trimm_r2_paired_file+' '+\
+trimm_r1_unpaired_file+' '+trimm_r2_unpaired_file
+print('### Perform a FastQC analysis after adapter trimming')
+os.system(fastqc_cmd)
 
-	### Merge all fastq files based on sample and read group (AKA barcodes)
+### Trim off remaining low quality reads with sickle
+sickle_r1_paired_file = './data/sickle/'+in_sample+'_merged_R1_'+'paired_sickle.fastq.gz'
+sickle_r2_paired_file = './data/sickle/'+in_sample+'_merged_R2_'+'paired_sickle.fastq.gz'
+sickle_singles_pe_file = './data/sickle/'+in_sample+'_merged_'+'singles_pe_sickle.fastq.gz'
+sickle_singles_se_file = './data/sickle/'+in_sample+'_merged_'+'singles_se_sickle.fastq.gz'
+out_dir = './data/sickle/'
+# Check if output directory exists, if not create it
+if not os.path.exists(out_dir):
+	os.makedirs(out_dir)
+# Run command
+sickle_pe_cmd = 'sickle pe -f '+trimm_r1_paired_file+' -r '+trimm_r2_paired_file+\
+' -t sanger -o '+sickle_r1_paired_file+' -p '+sickle_r2_paired_file+\
+' -s '+sickle_singles_pe_file+' -q 20 -l 50 -g'
+sickle_se_cmd = 'sickle se -f '+trimm_r1_unpaired_file+\
+' -t sanger -o '+sickle_singles_se_file+' -q 30 -l 50 -g'
+print('### Trim off remaining low quality reads with sickle')
+os.system(sickle_pe_cmd)
+os.system(sickle_se_cmd)
 
+### Perform FastQC post read quality trim via sickle
+out_dir = './analysis/fastqc_post_sickle/'
+# Check if output directory exists, if not create it
+if not os.path.exists(out_dir):
+	os.makedirs(out_dir)
+# Run command
+fastqc_cmd = 'fastqc -o'+' '+out_dir+' '+\
+sickle_r1_paired_file+' '+sickle_r2_paired_file+' '+\
+sickle_singles_pe_file+' '+sickle_singles_se_file
+print('### Perform FastQC post read quality trim via sickle')
+os.system(fastqc_cmd)
 
 	### Read mapping and alignment with bwa
 	out_dir = './data/bwa/'
