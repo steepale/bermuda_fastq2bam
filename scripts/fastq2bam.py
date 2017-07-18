@@ -6,7 +6,7 @@ from shutil import copyfile
 # reference files
 config_file = './data/config.txt'
 trim_adaptor_file = '/opt/software/Trimmomatic/0.33/adapters/TruSeq3-PE-2.fa'
-galgal5_ref = './data/Galgal5/genome.fa'
+galgal5_ref = './data/Galgal5/galgal5.fa'
 galgal5_ref_index = galgal5_ref.replace('.fa', '.fa.fai') 
 galgal5_ref_dict = galgal5_ref.replace('.fa', '.dict')
 dbsnp = './data/dbsnp/snp/organisms/chicken_9031/VCF/all_sorted.vcf'
@@ -291,8 +291,8 @@ print('\n'+'### Index the final bam file')
 os.system(final_bam_index_cmd)
 
 # Remove the dedupped realigned merged bam and index
-#os.remove(realigned_bam)
-#os.remove(realigned_bam_index)
+os.remove(realigned_bam)
+os.remove(realigned_bam_index)
 
 ### Finished Script
 print('Fin'+'\n')
